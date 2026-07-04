@@ -1,5 +1,10 @@
 Hi, thanks for testing this plugin.
 
+This is a general RDAP expiration Nagios plugin. It discovers the authoritative
+RDAP endpoint through IANA DNS bootstrap data, then queries the domain endpoint
+and extracts the RDAP expiration event. It was developed with a personal need
+for reliable .ar expiration monitoring, but it is not .ar-only.
+
 OK unzip the nagios_check_domain_expiration_rdap.zip file somewhere, chdir there.
 there should be a *.py file and requirements.txt.
 now install python3 dependencies:
@@ -13,6 +18,10 @@ Once the required modules are installed (you can also feed requirements.txt to p
 python3 nagios_check_domain_expiration_rdap.py example.net
 
 Feel free to replace example.net with one of your domains. :)
+
+Run the test suite from the repository root with:
+
+python3 -m unittest discover -s tests
 
 If python3 is not in your path, make sure it is installed.  python without
 the version number might be v2 or v3 in your system, YMMV.
@@ -42,6 +51,9 @@ define service{
 }
 
 Reload your nagios config, and enjoy!
+
+Transport, HTTP, JSON, or missing-expiration failures return Nagios UNKNOWN
+with endpoint context. They are not treated as zero days to expiration.
 
 File bugs here: https://github.com/buanzo/check_expiration_rdap/issues
 

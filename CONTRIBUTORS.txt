@@ -1,0 +1,7 @@
+Buanzo:
+- Original author and maintainer of check_expiration_rdap.
+- Defined the operational need for a general RDAP expiration Nagios plugin with reliable .ar coverage.
+
+OpenAI Codex / Jadzia:
+- Added IANA RDAP DNS bootstrap discovery, explicit HTTP timeout/header handling, clearer UNKNOWN failure reporting, and regression tests.
+- Preserved Python 3.5+/3.6-compatible implementation style for legacy Nagios deployments.
