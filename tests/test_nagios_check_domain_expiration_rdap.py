@@ -104,14 +104,111 @@ class RDAPTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.RDAPLookupError, 'expiration event'):
             self.module.expiration_date_from_rdap({'events': [{'eventAction': 'registration'}]})
 
+    def test_parses_nic_ar_whois_expire_field(self):
+        whois_output = '''
+domain:\t\tzoeytextil.com.ar
+registrar:\tnicar
+registered:\t2022-05-11 11:16:56.205162
+expire:\t\t2026-08-11 00:00:00
+'''
+
+        expires = self.module.expiration_date_from_nic_ar_whois(whois_output)
+
+        self.assertEqual(self.module.date(2026, 8, 11), expires)
+
+    def test_missing_nic_ar_whois_expire_field_is_unknown(self):
+        with self.assertRaisesRegex(self.module.RDAPLookupError, 'expire field'):
+            self.module.expiration_date_from_nic_ar_whois('domain: example.com.ar\nregistrar: nicar\n')
+
+    def test_rdap_failure_for_ar_domain_falls_back_to_nic_ar_whois(self):
+        session = FakeSession([
+            FakeResponse(self.bootstrap()),
+            requests.ConnectionError('reset by peer'),
+        ])
+        calls = []
+
+        def fake_whois_lookup(domain, timeout=None):
+            calls.append((domain, timeout))
+            return self.module.date(2026, 8, 11)
+
+        lookup = self.module.domain_expiration_lookup(
+            'ZOEYTEXTIL.COM.AR.',
+            session=session,
+            timeout=7,
+            whois_lookup=fake_whois_lookup,
+        )
+
+        self.assertEqual(self.module.date(2026, 8, 11), lookup.expires)
+        self.assertEqual('WHOIS whois.nic.ar', lookup.source)
+        self.assertIn('rdap.nic.ar', lookup.rdap_error)
+        self.assertEqual([('zoeytextil.com.ar', 7)], calls)
+
+    def test_days_to_expiration_uses_nic_ar_whois_fallback(self):
+        session = FakeSession([
+            FakeResponse(self.bootstrap()),
+            requests.ConnectionError('reset by peer'),
+        ])
+
+        days = self.module.domain_days_to_expiration(
+            'zoeytextil.com.ar',
+            session=session,
+            today=self.module.date(2026, 7, 6),
+            whois_lookup=lambda domain, timeout=None: self.module.date(2026, 8, 11),
+        )
+
+        self.assertEqual(36, days)
+
     def test_connection_error_includes_endpoint(self):
         session = FakeSession([
             FakeResponse(self.bootstrap()),
             requests.ConnectionError('reset by peer'),
         ])
 
+        def fake_whois_lookup(domain, timeout=None):
+            raise self.module.RDAPLookupError('WHOIS unavailable')
+
         with self.assertRaisesRegex(self.module.RDAPLookupError, 'https://rdap.nic.ar/domain/zoeytextil.com.ar'):
-            self.module.rdap_days_to_expiration('zoeytextil.com.ar', session=session)
+            self.module.rdap_days_to_expiration(
+                'zoeytextil.com.ar',
+                session=session,
+                whois_lookup=fake_whois_lookup,
+            )
+
+    def test_non_ar_domain_does_not_use_nic_ar_whois_fallback(self):
+        session = FakeSession([
+            FakeResponse(self.bootstrap()),
+            requests.ConnectionError('reset by peer'),
+        ])
+        calls = []
+
+        def fake_whois_lookup(domain, timeout=None):
+            calls.append((domain, timeout))
+            return self.module.date(2026, 8, 11)
+
+        with self.assertRaisesRegex(self.module.RDAPLookupError, 'https://rdap.example.com/domain/example.com'):
+            self.module.domain_expiration_lookup(
+                'example.com',
+                session=session,
+                whois_lookup=fake_whois_lookup,
+            )
+
+        self.assertEqual([], calls)
+
+    def test_rdap_and_whois_errors_are_both_reported(self):
+        session = FakeSession([
+            FakeResponse(self.bootstrap()),
+            requests.ConnectionError('reset by peer'),
+        ])
+
+        def fake_whois_lookup(domain, timeout=None):
+            raise self.module.RDAPLookupError('WHOIS unavailable')
+
+        with self.assertRaisesRegex(self.module.RDAPLookupError, 'RDAP failed.*WHOIS fallback failed.*WHOIS unavailable'):
+            self.module.domain_expiration_lookup(
+                'zoeytextil.com.ar',
+                session=session,
+                whois_lookup=fake_whois_lookup,
+            )
 
     def test_http_error_is_reported_as_lookup_error(self):
         session = FakeSession([

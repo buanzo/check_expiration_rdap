@@ -5,6 +5,10 @@ RDAP endpoint through IANA DNS bootstrap data, then queries the domain endpoint
 and extracts the RDAP expiration event. It was developed with a personal need
 for reliable .ar expiration monitoring, but it is not .ar-only.
 
+For .ar domains, if RDAP transport, HTTP, JSON, or expiration-event lookup
+fails, the plugin falls back to `whois -h whois.nic.ar` and parses NIC
+Argentina's `expire:` field.
+
 OK unzip the nagios_check_domain_expiration_rdap.zip file somewhere, chdir there.
 there should be a *.py file and requirements.txt.
 now install python3 dependencies:
@@ -53,7 +57,8 @@ define service{
 Reload your nagios config, and enjoy!
 
 Transport, HTTP, JSON, or missing-expiration failures return Nagios UNKNOWN
-with endpoint context. They are not treated as zero days to expiration.
+with endpoint context. They are not treated as zero days to expiration. For
+.ar domains, the NIC Argentina WHOIS fallback is attempted first.
 
 File bugs here: https://github.com/buanzo/check_expiration_rdap/issues
 

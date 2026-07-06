@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import re
 import nagiosplugin
 import requests
+import subprocess
+from collections import namedtuple
 from datetime import date, datetime
 from urllib.parse import quote
 
@@ -9,10 +12,15 @@ from urllib.parse import quote
 __version__ = '0.2'
 
 IANA_DNS_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json'
+NIC_AR_WHOIS_HOST = 'whois.nic.ar'
 DEFAULT_TIMEOUT = 15
 USER_AGENT = 'check_expiration_rdap/{} (+https://github.com/buanzo/check_expiration_rdap)'.format(__version__)
 ACCEPT_HEADER = 'application/rdap+json, application/json'
 EXPIRATION_EVENT_ACTIONS = set(['expiration', 'registration expiration'])
+NIC_AR_WHOIS_EXPIRE_RE = re.compile(
+    r'^\s*expire:\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)?\s*$',
+    re.IGNORECASE | re.MULTILINE)
+ExpirationLookup = namedtuple('ExpirationLookup', ['expires', 'source', 'rdap_error'])
 
 
 class RDAPLookupError(Exception):
@@ -100,20 +108,91 @@ def expiration_date_from_rdap(payload):
     raise RDAPLookupError('RDAP response did not include an expiration event')
 
 
-def rdap_days_to_expiration(domain, session=None, timeout=DEFAULT_TIMEOUT, today=None):
+def is_nic_ar_domain(domain):
+    return domain == 'ar' or domain.endswith('.ar')
+
+
+def decode_whois_output(output):
+    if isinstance(output, bytes):
+        return output.decode('utf-8', 'replace')
+    return output
+
+
+def query_nic_ar_whois(domain, timeout=DEFAULT_TIMEOUT):
+    try:
+        output = subprocess.check_output(
+            ['whois', '-h', NIC_AR_WHOIS_HOST, domain],
+            stderr=subprocess.STDOUT,
+            timeout=timeout)
+    except FileNotFoundError as exc:
+        raise RDAPLookupError('WHOIS command not found: {}'.format(exc))
+    except subprocess.TimeoutExpired:
+        raise RDAPLookupError('WHOIS request timed out for {} via {}'.format(domain, NIC_AR_WHOIS_HOST))
+    except subprocess.CalledProcessError as exc:
+        output = decode_whois_output(exc.output or b'').strip().replace('\n', '; ')
+        raise RDAPLookupError('WHOIS request failed for {} via {}: exit {} {}'.format(
+            domain, NIC_AR_WHOIS_HOST, exc.returncode, output))
+    return decode_whois_output(output)
+
+
+def expiration_date_from_nic_ar_whois(whois_output):
+    match = NIC_AR_WHOIS_EXPIRE_RE.search(whois_output)
+    if not match:
+        raise RDAPLookupError('NIC.ar WHOIS response did not include an expire field')
+    try:
+        return datetime.strptime(match.group(1), '%Y-%m-%d').date()
+    except ValueError:
+        raise RDAPLookupError('invalid NIC.ar WHOIS expiration date: {}'.format(match.group(1)))
+
+
+def nic_ar_whois_expiration_date(domain, timeout=DEFAULT_TIMEOUT):
+    return expiration_date_from_nic_ar_whois(query_nic_ar_whois(domain, timeout=timeout))
+
+
+def domain_expiration_lookup(domain, session=None, timeout=DEFAULT_TIMEOUT, whois_lookup=None):
     domain = normalize_domain(domain)
-    payload = fetch_domain_rdap(domain, session=session, timeout=timeout)
-    expires = expiration_date_from_rdap(payload)
+    try:
+        payload = fetch_domain_rdap(domain, session=session, timeout=timeout)
+        return ExpirationLookup(expiration_date_from_rdap(payload), 'RDAP', None)
+    except RDAPLookupError as rdap_error:
+        if not is_nic_ar_domain(domain):
+            raise
+        whois_lookup = whois_lookup or nic_ar_whois_expiration_date
+        try:
+            expires = whois_lookup(domain, timeout=timeout)
+        except RDAPLookupError as whois_error:
+            raise RDAPLookupError('RDAP failed for {}: {}; WHOIS fallback failed via {}: {}'.format(
+                domain, rdap_error, NIC_AR_WHOIS_HOST, whois_error))
+        return ExpirationLookup(expires, 'WHOIS {}'.format(NIC_AR_WHOIS_HOST), str(rdap_error))
+
+
+def domain_days_to_expiration(domain, session=None, timeout=DEFAULT_TIMEOUT, today=None, whois_lookup=None):
+    lookup = domain_expiration_lookup(domain, session=session, timeout=timeout, whois_lookup=whois_lookup)
     today = today or date.today()
-    return (expires - today).days
+    return (lookup.expires - today).days
+
+
+def rdap_days_to_expiration(domain, session=None, timeout=DEFAULT_TIMEOUT, today=None, whois_lookup=None):
+    return domain_days_to_expiration(
+        domain,
+        session=session,
+        timeout=timeout,
+        today=today,
+        whois_lookup=whois_lookup)
 
 
 class DaysToExpiration(nagiosplugin.Resource):
     def __init__(self, domain):
         self.domain = domain
+        self.source = None
+        self.rdap_error = None
 
     def probe(self):
-        days_to_expiration = rdap_days_to_expiration(self.domain)
+        lookup = domain_expiration_lookup(self.domain)
+        today = date.today()
+        days_to_expiration = (lookup.expires - today).days
+        self.source = lookup.source
+        self.rdap_error = lookup.rdap_error
         return [nagiosplugin.Metric('daystoexpiration',
                                     days_to_expiration,
                                     context='daystoexpiration')]
@@ -122,7 +201,19 @@ class DaysToExpiration(nagiosplugin.Resource):
 class LoadSummary(nagiosplugin.Summary):
     def __init__(self, domain):
         self.domain = domain
-    pass
+
+    def ok(self, results):
+        return self._format_with_source(results[0])
+
+    def problem(self, results):
+        return self._format_with_source(results.first_significant)
+
+    def _format_with_source(self, result):
+        message = '{}'.format(result)
+        source = getattr(result.resource, 'source', None)
+        if source and source != 'RDAP':
+            message = '{} via {}'.format(message, source)
+        return message
 
 
 @nagiosplugin.guarded

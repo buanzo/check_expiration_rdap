@@ -6,7 +6,9 @@ A nagios plugin to check domain name expiration date using an RDAP backend.
 
 This plugin discovers the authoritative RDAP endpoint for a domain through
 IANA's DNS RDAP bootstrap data, then reads the domain RDAP object and extracts
-its expiration event.
+its expiration event. For `.ar` domains, if RDAP transport, HTTP, JSON, or
+expiration-event lookup fails, it falls back to `whois -h whois.nic.ar` and
+parses NIC Argentina's `expire:` field.
 
 It is intended to be a general RDAP expiration check. It was developed with a
 specific operational need for reliable `.ar` expiration monitoring, so `.ar`
@@ -40,7 +42,8 @@ python3 -m unittest discover -s tests
 
 Transport, HTTP, JSON, or missing-expiration failures return Nagios UNKNOWN
 with the endpoint in the error text. They are not treated as zero days to
-expiration.
+expiration. For `.ar` domains, the plugin first attempts the NIC Argentina
+WHOIS fallback before returning UNKNOWN.
 
 ## Configure as Nagios Plugin
 

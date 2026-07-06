@@ -4,4 +4,5 @@ Buanzo:
 
 OpenAI Codex / Jadzia:
 - Added IANA RDAP DNS bootstrap discovery, explicit HTTP timeout/header handling, clearer UNKNOWN failure reporting, and regression tests.
+- Added NIC Argentina WHOIS fallback for `.ar` domains when RDAP cannot provide the expiration date.
 - Preserved Python 3.5+/3.6-compatible implementation style for legacy Nagios deployments.
